@@ -130,8 +130,7 @@ impl JSONExporter {
 
         let timeout = parameters.value_of("timeout").unwrap();
         if timeout.is_empty() {
-            thread::spawn(move || {
-                let val = String::from("hi");        
+            thread::spawn(move || {       
                 let sys = System::new();
                     
                 loop {
@@ -168,8 +167,7 @@ impl JSONExporter {
 
             info!("Measurement step is: {}s", step_duration);
 
-            thread::spawn(move || {
-                let val = String::from("hi");        
+            thread::spawn(move || {  
                 let sys = System::new();
                     
                 loop {
@@ -219,8 +217,10 @@ impl JSONExporter {
             Err(x) => println!("\nLoad average: error: {}", x)
         }*/
         host_average_load = sys.load_average().unwrap().one;
-        
-        let host_cpu_load = 1.0 - receiver.try_recv().unwrap().idle;
+       
+        let tmp_cpu_load = receiver.try_recv().unwrap();
+        let cpu_load = receiver.try_recv().unwrap_or(tmp_cpu_load);
+        let host_cpu_load = cpu_load.user + cpu_load.nice + cpu_load.system;
 
         /*let mpstat = Command::new("/usr/bin/mpstat")
                      .output()
@@ -237,6 +237,7 @@ impl JSONExporter {
             Some(value) => value,
             None => return,
         };
+        // let host_cpu_load = host_stat.cputime.user + host_stat.cputime.nice + host_stat.cputime.system;
 
         let consumers = self.topology.proc_tracker.get_top_consumers(
             parameters
