@@ -10,8 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 extern crate systemstat;
-use systemstat::{System, Platform, CPULoad};
-use std::sync::mpsc;
+use systemstat::{System, Platform};
 
 /// An Exporter that displays power consumption data of the host
 /// and its processes on the standard output of the terminal.
@@ -96,6 +95,7 @@ struct Consumer {
     exe: PathBuf,
     pid: i32,
     consumption: f32,
+    memory: i64,
 }
 #[derive(Serialize, Deserialize)]
 struct Host {
@@ -103,6 +103,9 @@ struct Host {
     timestamp: f64,
     average_load: f32,
     cpu_load: f32,
+    cpu_temp: u64,
+    mem_total: u64,
+    mem_free: u64,
 }
 #[derive(Serialize, Deserialize)]
 struct Report {
@@ -124,29 +127,9 @@ impl JSONExporter {
 
     /// Runs iteration() every 'step', until 'timeout'
     pub fn runner(&mut self, parameters: ArgMatches) {
-        // transmit, recieve
-        let (sender, receiver) = mpsc::channel();
-    
-
         let timeout = parameters.value_of("timeout").unwrap();
         if timeout.is_empty() {
-            thread::spawn(move || {       
-                let sys = System::new();
-                    
-                loop {
-                    match sys.cpu_load_aggregate() {
-                        Ok(cpu)=> {
-                            thread::sleep(Duration::new(2, 0));
-                            let cpu = cpu.done().unwrap();
-                            sender.send(cpu);
-                        },
-                        Err(x) => println!("\nCPU load: error: {}", x)
-                    }
-                }
-            });
-            thread::sleep(Duration::from_secs(2));
-
-            self.iterate(&parameters, &receiver);
+            self.iterate(&parameters);
         } else {
             let now = Instant::now();
 
@@ -167,36 +150,19 @@ impl JSONExporter {
 
             info!("Measurement step is: {}s", step_duration);
 
-            thread::spawn(move || {  
-                let sys = System::new();
-                    
-                loop {
-                    match sys.cpu_load_aggregate() {
-                        Ok(cpu)=> {
-                            thread::sleep(Duration::new(step_duration, step_duration_nano));
-                            let cpu = cpu.done().unwrap();
-                            sender.send(cpu);
-                        },
-                        Err(x) => println!("\nCPU load: error: {}", x)
-                    }
-                }
-            });
-            thread::sleep(Duration::new(step_duration, step_duration_nano));
-
             while now.elapsed().as_secs() <= timeout_secs {
-                self.iterate(&parameters, &receiver);
+                self.iterate(&parameters);
                 thread::sleep(Duration::new(step_duration, step_duration_nano));
             }
         }
-        drop(receiver);
     }
 
-    fn iterate(&mut self, parameters: &ArgMatches, receiver: &mpsc::Receiver<CPULoad>) {
+    fn iterate(&mut self, parameters: &ArgMatches) {
         self.topology.refresh();
-        self.retrieve_metrics(&parameters, &receiver);
+        self.retrieve_metrics(&parameters);
     }
 
-    fn retrieve_metrics(&mut self, parameters: &ArgMatches, receiver: &mpsc::Receiver<CPULoad>) {
+    fn retrieve_metrics(&mut self, parameters: &ArgMatches) {
         let mut host_power = 0;
         let host_timestamp: Duration;
         if let Some(microwatts_record) = self.topology.get_records_diff_power_microwatts() {
@@ -208,36 +174,17 @@ impl JSONExporter {
         }
         
         let sys = System::new();
-        let mut host_average_load = 0.0;
-        /*match sys.load_average() {
-            Ok(loadavg) => {
-                host_average_load = loadavg.one;
-                println!("{}", host_average_load);
-            },
-            Err(x) => println!("\nLoad average: error: {}", x)
-        }*/
-        host_average_load = sys.load_average().unwrap().one;
-       
-        let tmp_cpu_load = receiver.try_recv().unwrap();
-        let cpu_load = receiver.try_recv().unwrap_or(tmp_cpu_load);
-        let host_cpu_load = cpu_load.user + cpu_load.nice + cpu_load.system;
-
-        /*let mpstat = Command::new("/usr/bin/mpstat")
-                     .output()
-                     .expect("failed to execute process");
-        let mpstat_string = String::from_utf8_lossy(&mpstat.stdout);
-        let non_idle = 1.0 - (mpstat_string
-            .lines().last().unwrap()
-            .split_whitespace().last().unwrap()
-            .parse::<f32>().unwrap() / 100.0);
-        println!("stdout: {}", String::from_utf8_lossy(&output.stdout));*/
-
+        let host_average_load = sys.load_average().unwrap().one;
+        let host_cpu_temp = sys.cpu_temp().unwrap();
+        let host_mem = sys.memory().unwrap();
+        let host_mem_free = host_mem.free;
+        let host_mem_total = host_mem.total;
 
         let host_stat = match self.topology.get_stats_diff() {
             Some(value) => value,
             None => return,
         };
-        // let host_cpu_load = host_stat.cputime.user + host_stat.cputime.nice + host_stat.cputime.system;
+        let host_cpu_load = host_stat.cputime.user + host_stat.cputime.nice + host_stat.cputime.system;
 
         let consumers = self.topology.proc_tracker.get_top_consumers(
             parameters
@@ -256,6 +203,7 @@ impl JSONExporter {
                     consumption: ((*value as f32
                         / (host_time * procfs::ticks_per_second().unwrap() as f32))
                         * host_power as f32),
+                    memory: process.stat.rss,
                 }
             })
             .collect::<Vec<_>>();
@@ -299,6 +247,9 @@ impl JSONExporter {
             timestamp: host_timestamp.as_secs_f64(),
             average_load: host_average_load as f32,
             cpu_load: host_cpu_load as f32,
+            cpu_temp: host_cpu_temp as u64,
+            mem_total: host_mem_total.as_u64(),
+            mem_free: host_mem_free.as_u64(),
         };
 
         let report = Report {
