@@ -8,6 +8,6 @@
 ```
 git clone https://github.com/tstrempel/scaphandre
 cd scaphandre
-docker build -t strempel/scaphandre - < Dockerfile
-docker run -v /sys/class/powercap:/sys/class/powercap -v /proc:/proc -ti strempel/scaphandre json -t 10
+docker build -t tstrempel/scaphandre - < Dockerfile
+docker run -v /sys/class/powercap:/sys/class/powercap -v /proc:/proc -ti tstrempel/scaphandre --no-header json --timeout 10 --step 1 --step_nano 0 --max-top-consumers=10
 ```
