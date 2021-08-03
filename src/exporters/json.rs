@@ -5,6 +5,8 @@ use clap::Arg;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::Path;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,6 +80,12 @@ impl Exporter for JSONExporter {
     }
 }
 
+fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+where P: AsRef<Path>, {
+    let file = File::open(filename)?;
+    Ok(io::BufReader::new(file).lines())
+}
+
 #[derive(Serialize, Deserialize)]
 struct Domain {
     name: String,
@@ -103,7 +111,7 @@ struct Host {
     timestamp: f64,
     average_load: f32,
     cpu_load: f32,
-    cpu_temp: u64,
+    cpu_temp: f32,
     mem_total: u64,
     mem_free: u64,
 }
@@ -175,10 +183,20 @@ impl JSONExporter {
         
         let sys = System::new();
         let host_average_load = sys.load_average().unwrap().one;
-        let host_cpu_temp = sys.cpu_temp().unwrap();
+        let mut host_cpu_temp = 0.0;
         let host_mem = sys.memory().unwrap();
         let host_mem_free = host_mem.free;
         let host_mem_total = host_mem.total;
+
+        if let Ok(lines) = read_lines("/sys/class/thermal/thermal_zone3/temp") {
+            // Consumes the iterator, returns an (Optional) String
+            for line in lines {
+                if let Ok(tmp) = line {
+                    host_cpu_temp = tmp.parse::<f32>().unwrap() / 1000.0
+                }
+                break;
+            }
+        }
 
         let host_stat = match self.topology.get_stats_diff() {
             Some(value) => value,
@@ -247,7 +265,7 @@ impl JSONExporter {
             timestamp: host_timestamp.as_secs_f64(),
             average_load: host_average_load as f32,
             cpu_load: host_cpu_load as f32,
-            cpu_temp: host_cpu_temp as u64,
+            cpu_temp: host_cpu_temp as f32,
             mem_total: host_mem_total.as_u64(),
             mem_free: host_mem_free.as_u64(),
         };
